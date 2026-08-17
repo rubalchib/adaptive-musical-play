@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Adaptive Musical Play</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #181a20;
+    color: #f5f5f5;
+    min-height: 100vh;
+  }
+  .app {
+    width: min(1100px, 96vw);
+    margin: 0 auto;
+    padding: 24px 18px 28px;
+  }
+  h1 { text-align:center; margin: 0 0 8px; font-size: 32px; }
+  h2 { text-align:center; color:#4696e6; margin: 0 0 8px; }
+  .instructions, .message, .stats { text-align:center; }
+  .instructions { color:#b4b9c3; font-size:18px; margin-bottom:10px; }
+  .message { font-size:22px; min-height:32px; margin: 12px 0 20px; }
+  .stats { color:#b4b9c3; font-size:15px; margin-bottom:18px; }
+  .panel {
+    min-height: 410px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+  }
+  .notes, .candidates {
+    display:flex;
+    justify-content:center;
+    align-items:stretch;
+    flex-wrap:wrap;
+    gap:15px;
+    margin-top:30px;
+  }
+  button {
+    border:0;
+    border-radius:12px;
+    cursor:pointer;
+    font:inherit;
+    color:white;
+  }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .note {
+    width:105px; height:145px;
+    font-size:25px; font-weight:bold;
+    color:#191919;
+  }
+  .note:nth-child(1){background:#dc5050}.note:nth-child(2){background:#e68232}
+  .note:nth-child(3){background:#e6be32}.note:nth-child(4){background:#3cbe6e}
+  .note:nth-child(5){background:#3c8cdc}.note:nth-child(6){background:#965ac8}
+  .note:nth-child(7){background:#28b4a0}.note:nth-child(8){background:#8c969f}
+
+  .target {
+    background:#4696e6;
+    padding:20px 42px;
+    border-radius:12px;
+    font-size:20px;
+    font-weight:bold;
+    margin-top:18px;
+  }
+  .candidate {
+    width:180px;
+    min-height:105px;
+    background:#414b5f;
+    border:4px solid #787d87;
+    padding:18px;
+    font-size:18px;
+  }
+  .candidate.selected { background:#4682be; border-color:#3cc878; }
+  .candidate span { display:block; font-size:14px; margin-top:8px; }
+  .controls { display:flex; justify-content:center; gap:20px; flex-wrap:wrap; margin-top:26px; }
+  .control {
+    padding:13px 24px;
+    background:#37465a;
+  }
+  .submit { background:#3cc878; }
+  .submit.disabled { background:#46505a; }
+  .modes {
+    display:flex; justify-content:center; flex-wrap:wrap; gap:8px;
+    margin:10px 0 16px;
+  }
+  .mode {
+    background:#303744; padding:10px 15px; font-size:15px;
+  }
+  .mode.active { background:#4696e6; }
+  .help { color:#aeb4be; text-align:center; font-size:15px; margin-top:12px; }
+  .footer { text-align:center; color:#8b909b; margin-top:10px; font-size:14px; }
+  .hidden { display:none !important; }
+
+  @media (max-width:700px) {
+    h1 { font-size:25px; }
+    .instructions { font-size:15px; }
+    .message { font-size:18px; }
+    .note { width:82px; height:110px; font-size:20px; }
+    .candidate { width:140px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Adaptive Musical Play</h1>
+
+  <div class="modes">
+    <button class="mode active" data-mode="learn">Learn</button>
+    <button class="mode" data-mode="pitch">Pitch</button>
+    <button class="mode" data-mode="duration">Duration</button>
+    <button class="mode" data-mode="melody">Melody</button>
+    <button class="mode" data-mode="memory">Memory</button>
+  </div>
+
+  <h2 id="modeTitle">Learn</h2>
+  <div class="instructions" id="instructions"></div>
+  <div class="stats" id="stats"></div>
+  <div class="message" id="message"></div>
+
+  <div class="panel">
+    <div id="learnPanel" class="notes"></div>
+
+    <div id="identifyPanel" class="hidden">
+      <div class="target" id="targetButton">TARGET</div>
+      <div class="candidates" id="candidates"></div>
+      <div class="controls">
+        <button class="control" id="replayTarget">Hear Target Again</button>
+        <button class="control submit disabled" id="submitButton">SUBMIT</button>
+      </div>
+      <div class="help" id="identifyHelp"></div>
+    </div>
+
+    <div id="memoryPanel" class="hidden">
+      <div class="notes" id="memoryNotes"></div>
+      <div class="help">Listen to the sequence, then reproduce it. The target cannot be replayed in Memory mode.</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Keyboard: 1–8 = play/select &nbsp; Enter = submit &nbsp; Tab = next activity
+  </div>
+</div>
+
+<script>
+const NOTES = [
+  ["Sa", 262], ["Re", 294], ["Ga", 330], ["Ma", 349],
+  ["Pa", 392], ["Dha", 440], ["Ni", 494], ["Sa'", 523]
+];
+
+const modes = ["learn", "pitch", "duration", "melody", "memory"];
+let mode = "learn";
+let learnedNotes = 3;
+let selected = null;
+let correctIndex = 0;
+let target = null;
+let candidates = [];
+let targetMelody = [];
+let candidateMelodies = [];
+let playing = false;
+let awaiting = false;
+let memorySequence = [];
+let memoryStep = 0;
+let audioCtx = null;
+
+const state = {};
+for (const m of ["pitch","duration","melody","memory"]) {
+  state[m] = { level:1, streak:0, correct:0, total:0, best:0 };
+}
+
+const $ = id => document.getElementById(id);
+
+function ensureAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume();
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function tone(freq, duration=0.45, volume=0.18) {
+  ensureAudio();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = freq;
+  const now = audioCtx.currentTime;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.linearRampToValueAtTime(volume, now + 0.025);
+  gain.gain.setValueAtTime(volume, now + Math.max(0.03, duration - 0.05));
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(now);
+  osc.stop(now + duration + 0.02);
+}
+
+async function playSequence(sequence, gap=560) {
+  ensureAudio();
+  playing = true;
+  for (const item of sequence) {
+    if (typeof item === "object") {
+      tone(item.freq, item.duration);
+      await sleep(item.duration * 1000 + gap);
+    } else {
+      tone(NOTES[item][1], 0.45);
+      await sleep(gap);
+    }
+  }
+  playing = false;
+}
+
+function setMessage(text) { $("message").textContent = text; }
+
+function updateHeader() {
+  const titles = {
+    learn:"Learn",
+    pitch:"Pitch Matching",
+    duration:"Duration",
+    melody:"Melody Matching",
+    memory:"Memory"
+  };
+  const instructions = {
+    learn:"Explore each swara and learn how it sounds.",
+    pitch:"Hear the target, compare the tones, then select and submit.",
+    duration:"Hear the target, compare the lengths, then select and submit.",
+    melody:"Hear the target melody. Replay it and every candidate as often as you need.",
+    memory:"Listen to the sequence once, remember it, then reproduce it."
+  };
+  $("modeTitle").textContent = titles[mode];
+  $("instructions").textContent = instructions[mode];
+
+  if (mode === "learn") {
+    $("stats").textContent = `Beginner set: ${learnedNotes} swaras unlocked`;
+  } else {
+    const s = state[mode];
+    const acc = s.total ? Math.round(100*s.correct/s.total) : 0;
+    let difficulty = `Level ${s.level} · Streak ${s.streak} · Best ${s.best} · Accuracy ${acc}%`;
+    if (mode === "pitch") difficulty += ` · ${pitchK()} candidates`;
+    if (mode === "duration") difficulty += ` · ${durationK()} candidates`;
+    if (mode === "melody") difficulty += ` · ${melodyLength()} notes · ${melodyK()} candidates`;
+    if (mode === "memory") difficulty += ` · ${memoryLength()} notes`;
+    $("stats").textContent = difficulty;
+  }
+
+  document.querySelectorAll(".mode").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+}
+
+function pitchK() { return Math.min(2 + Math.floor((state.pitch.level-1)/2), 6); }
+function durationK() { return Math.min(2 + Math.floor((state.duration.level-1)/2), 6); }
+function durationGap() { return Math.max(40, 300 - (state.duration.level-1)*15); }
+function melodyLength() { return Math.min(2 + Math.floor((state.melody.level-1)/3), 6); }
+function melodyK() { return Math.min(2 + Math.floor((state.melody.level-1)/4), 4); }
+function memoryLength() { return Math.min(2 + Math.floor((state.memory.level-1)/2), 10); }
+
+function unlockNotes() {
+  const total = Object.values(state).reduce((a,s)=>a+s.correct,0);
+  if (total >= 5) learnedNotes = Math.max(learnedNotes,4);
+  if (total >= 12) learnedNotes = Math.max(learnedNotes,5);
+  if (total >= 20) learnedNotes = Math.max(learnedNotes,6);
+  if (total >= 30) learnedNotes = Math.max(learnedNotes,7);
+  if (total >= 42) learnedNotes = 8;
+}
+
+function renderLearn() {
+  $("learnPanel").innerHTML = "";
+  for (let i=0;i<learnedNotes;i++) {
+    const b = document.createElement("button");
+    b.className = "note";
+    b.textContent = NOTES[i][0];
+    b.onclick = () => {
+      tone(NOTES[i][1]);
+      setMessage(`This is ${NOTES[i][0]}.`);
+    };
+    $("learnPanel").appendChild(b);
+  }
+}
+
+function renderMemory() {
+  $("memoryNotes").innerHTML = "";
+  for (let i=0;i<learnedNotes;i++) {
+    const b = document.createElement("button");
+    b.className = "note";
+    b.textContent = NOTES[i][0];
+    b.onclick = () => memoryAnswer(i);
+    $("memoryNotes").appendChild(b);
+  }
+}
+
+function candidateButton(i, label, playFn) {
+  const b = document.createElement("button");
+  b.className = "candidate" + (selected === i ? " selected" : "");
+  b.innerHTML = `${label}<span>PLAY + SELECT</span>`;
+  b.onclick = playFn;
+  return b;
+}
+
+function renderCandidates() {
+  $("candidates").innerHTML = "";
+  const labels = mode === "melody"
+    ? candidates.map((_,i)=>`Melody ${i+1}`)
+    : candidates.map((_,i)=>`Candidate ${i+1}`);
+  candidates.forEach((_,i) => {
+    $("candidates").appendChild(
+      candidateButton(i, labels[i], () => chooseCandidate(i))
+    );
+  });
+  $("submitButton").classList.toggle("disabled", selected === null);
+}
+
+async function chooseCandidate(i) {
+  if (!awaiting || playing) return;
+  selected = i;
+  renderCandidates();
+
+  if (mode === "melody") {
+    setMessage(`Melody ${i+1} selected. You can replay it or change your selection.`);
+    await playSequence(candidateMelodies[i], 420);
+  } else {
+    setMessage(`Candidate ${i+1} selected. Listen again or choose another.`);
+    if (mode === "duration") {
+      const sound = candidates[i];
+      tone(sound.freq, sound.duration);
+    } else {
+      tone(candidates[i].freq, 0.45);
+    }
+  }
+}
+
+function setupPitch() {
+  const k = pitchK();
+  const base = NOTES[Math.floor(Math.random()*learnedNotes)][1];
+  correctIndex = Math.floor(Math.random()*k);
+  const gap = Math.max(20, 220-(state.pitch.level-1)*12);
+  candidates = [];
+  for (let i=0;i<k;i++) {
+    let freq = base;
+    if (i !== correctIndex) {
+      const cents = ([-3,-2,-1,1,2,3][Math.floor(Math.random()*6)]) * gap;
+      freq = base * Math.pow(2,cents/1200);
+    }
+    candidates.push({freq});
+  }
+  target = {freq:base};
+  selected = null;
+  renderCandidates();
+  awaiting = false;
+  setMessage("Listen to the TARGET...");
+  setTimeout(async()=> {
+    tone(base,0.45);
+    await sleep(700);
+    awaiting = true;
+    setMessage("Now compare the candidates. Select one, then SUBMIT.");
+  },500);
+}
+
+function setupDuration() {
+  const k = durationK();
+  const base = 0.35 + Math.random()*0.25;
+  correctIndex = Math.floor(Math.random()*k);
+  const gap = durationGap();
+  candidates = [];
+  const used = new Set();
+
+  for (let i=0;i<k;i++) {
+    let d = base;
+    if (i !== correctIndex) {
+      let diff;
+      do {
+        diff = ([-3,-2,-1,1,2,3][Math.floor(Math.random()*6)]) * gap;
+      } while (used.has(diff));
+      used.add(diff);
+      d = Math.max(0.15, base + diff/1000);
+    }
+    candidates.push({freq:440,duration:d});
+  }
+
+  target = {freq:440,duration:base};
+  selected = null;
+  renderCandidates();
+  awaiting = false;
+  setMessage("Listen to the TARGET length...");
+  setTimeout(async()=> {
+    tone(440,base);
+    await sleep(800);
+    awaiting = true;
+    setMessage("Compare the candidate lengths. Select one, then SUBMIT.");
+  },500);
+}
+
+function makeMelody(length) {
+  return Array.from({length},()=>Math.floor(Math.random()*learnedNotes));
+}
+
+function setupMelody() {
+  const L = melodyLength();
+  const k = melodyK();
+  targetMelody = makeMelody(L);
+  correctIndex = Math.floor(Math.random()*k);
+  candidateMelodies = [];
+
+  for (let i=0;i<k;i++) {
+    if (i === correctIndex) {
+      candidateMelodies.push([...targetMelody]);
+    } else {
+      const seq = [...targetMelody];
+      const pos = Math.floor(Math.random()*L);
+      const original = seq[pos];
+      const nearby = [-2,-1,1,2]
+        .map(d=>original+d)
+        .filter(x=>x>=0 && x<learnedNotes);
+      const alternatives = nearby.length ? nearby :
+        Array.from({length:learnedNotes},(_,x)=>x).filter(x=>x!==original);
+      seq[pos] = alternatives[Math.floor(Math.random()*alternatives.length)];
+      candidateMelodies.push(seq);
+    }
+  }
+
+  candidates = candidateMelodies;
+  selected = null;
+  renderCandidates();
+  awaiting = false;
+  setMessage("Listen to the TARGET melody...");
+
+  setTimeout(async()=> {
+    await playSequence(targetMelody,420);
+    awaiting = true;
+    setMessage("Compare the melodies by ear. Replay any of them as often as you need.");
+  },500);
+}
+
+function setupMemory() {
+  memorySequence = Array.from(
+    {length:memoryLength()},
+    ()=>Math.floor(Math.random()*learnedNotes)
+  );
+  memoryStep = 0;
+  awaiting = false;
+  setMessage("Listen carefully. Remember the sequence...");
+
+  setTimeout(async()=> {
+    await playSequence(memorySequence,520);
+    awaiting = true;
+    setMessage("Your turn — reproduce the sequence.");
+  },500);
+}
+
+function memoryAnswer(i) {
+  if (!awaiting || playing) return;
+  tone(NOTES[i][1],0.4);
+
+  if (i !== memorySequence[memoryStep]) {
+    finish(false);
+    return;
+  }
+
+  memoryStep++;
+  if (memoryStep === memorySequence.length) {
+    finish(true);
+  } else {
+    setMessage(`Good! ${memoryStep}/${memorySequence.length}`);
+  }
+}
+
+function finish(correct) {
+  awaiting = false;
+  const s = state[mode];
+  s.total++;
+
+  if (correct) {
+    s.correct++;
+    s.streak++;
+    s.best = Math.max(s.best,s.streak);
+    if (s.streak % 3 === 0) s.level++;
+    setMessage(s.streak % 3 === 0
+      ? "Excellent! Next challenge is harder."
+      : "Correct! Well done.");
+  } else {
+    s.streak = 0;
+    s.level = Math.max(1,s.level-1);
+    setMessage("That's okay. The next challenge will be a little easier.");
+  }
+
+  unlockNotes();
+  updateHeader();
+
+  setTimeout(() => newRound(),1500);
+}
+
+function submit() {
+  if (!awaiting) return;
+  if (selected === null) {
+    setMessage("Please select a candidate first.");
+    return;
+  }
+  finish(selected === correctIndex);
+}
+
+function replayTarget() {
+  if (playing || !awaiting) return;
+
+  if (mode === "pitch") {
+    tone(target.freq,0.45);
+    setMessage("Target played again.");
+  } else if (mode === "duration") {
+    tone(target.freq,target.duration);
+    setMessage("Target played again.");
+  } else if (mode === "melody") {
+    setMessage("Target melody playing...");
+    playSequence(targetMelody,420).then(()=>{
+      if (awaiting) setMessage("Compare the melodies by ear.");
+    });
+  }
+}
+
+function render() {
+  updateHeader();
+  $("learnPanel").classList.toggle("hidden",mode!=="learn");
+  $("identifyPanel").classList.toggle("hidden",!["pitch","duration","melody"].includes(mode));
+  $("memoryPanel").classList.toggle("hidden",mode!=="memory");
+
+  if (mode==="learn") renderLearn();
+  if (mode==="memory") renderMemory();
+
+  $("targetButton").textContent =
+    mode==="melody" ? "TARGET MELODY" : "TARGET";
+
+  $("identifyHelp").textContent =
+    mode==="melody"
+      ? "Click a melody to play the entire tune. Compare freely before submitting."
+      : "Click a candidate to hear it and select it. You can change your selection before submitting.";
+
+  renderCandidates();
+}
+
+function newRound() {
+  selected = null;
+  playing = false;
+  awaiting = false;
+
+  if (mode==="learn") {
+    setMessage("Start by exploring the swaras.");
+  } else if (mode==="pitch") {
+    setupPitch();
+  } else if (mode==="duration") {
+    setupDuration();
+  } else if (mode==="melody") {
+    setupMelody();
+  } else if (mode==="memory") {
+    setupMemory();
+  }
+  render();
+}
+
+function setMode(newMode) {
+  ensureAudio();
+  mode = newMode;
+  newRound();
+}
+
+document.querySelectorAll(".mode").forEach(b => {
+  b.addEventListener("click",()=>setMode(b.dataset.mode));
+});
+
+$("replayTarget").onclick = replayTarget;
+$("submitButton").onclick = submit;
+$("targetButton").onclick = replayTarget;
+
+document.addEventListener("keydown",e=>{
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const i = modes.indexOf(mode);
+    setMode(modes[(i+1)%modes.length]);
+    return;
+  }
+
+  if (e.key === "Enter") {
+    submit();
+    return;
+  }
+
+  if (/^[1-8]$/.test(e.key)) {
+    const i = Number(e.key)-1;
+    ensureAudio();
+
+    if (mode==="learn" && i<learnedNotes) {
+      tone(NOTES[i][1]);
+      setMessage(`This is ${NOTES[i][0]}.`);
+    } else if (mode==="memory" && i<learnedNotes) {
+      memoryAnswer(i);
+    } else if (["pitch","duration","melody"].includes(mode)) {
+      if (i < candidates.length) chooseCandidate(i);
+    }
+  }
+});
+
+newRound();
+</script>
+</body>
+</html>
