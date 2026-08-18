@@ -1,1 +1,1 @@
-# adaptive-musical-play
+# Adaptive Musical Game
